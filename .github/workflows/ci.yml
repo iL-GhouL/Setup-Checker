@@ -19,11 +19,24 @@ jobs:
     - name: Setup MSBuild
       uses: microsoft/setup-msbuild@v2
 
-    - name: Build
-      run: msbuild "CL Setup.sln" /p:Configuration=Release /p:Platform=${{ matrix.platform }}
+    - name: Build x64
+      if: matrix.platform == 'x64'
+      run: msbuild "CL Setup.sln" /p:Configuration=Release /p:Platform=x64
 
-    - name: Upload artifact
+    - name: Build x86
+      if: matrix.platform == 'x86'
+      run: msbuild "CL Setup.sln" /p:Configuration=Release /p:Platform=x86
+
+    - name: Upload x64
+      if: matrix.platform == 'x64'
       uses: actions/upload-artifact@v4
       with:
-        name: CL-Setup-${{ matrix.platform }}
-        path: Build\${{ matrix.platform }}\CL Setup.exe
+        name: CL-Setup-x64
+        path: Build\x64\CL Setup.exe
+
+    - name: Upload x86
+      if: matrix.platform == 'x86'
+      uses: actions/upload-artifact@v4
+      with:
+        name: CL-Setup-x86
+        path: Build\x86\CL Setup.exe
