@@ -51,6 +51,8 @@ enum class ErrorCode {
     E30_Gamebar_Open = 30,
     E31_FastBoot_Write = 31,
     E32_FastBoot_Open = 32,
+    E33_Defender_Tamper = 33,
+    E34_AV_Tamper = 34,
 };
 
 struct CLIConfig {
@@ -69,6 +71,8 @@ struct CheckResult {
 };
 
 namespace Checks {
+    bool checkDefenderTamperProtection();
+    bool checkAVTamperProtection(const std::string& avName);
     void checkWindowsDefender();
     void check3rdPartyAntiVirus();
     void checkCPUV();
