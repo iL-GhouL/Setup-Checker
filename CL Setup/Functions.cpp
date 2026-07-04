@@ -151,14 +151,15 @@ void Helper::showHelp()
     std::cout << "  --headless          Run without user interaction\n";
     std::cout << "  --quiet             Only show errors and warnings\n";
     std::cout << "  --export FILE       Export results as JSON to FILE\n";
-    std::cout << "  --skip N[,M,...]    Skip specific checks by number (1-22)\n";
-    std::cout << "  --only N[,M,...]    Run only specific checks by number (1-22)\n\n";
+    std::cout << "  --skip N[,M,...]    Skip specific checks by number (1-24)\n";
+    std::cout << "  --only N[,M,...]    Run only specific checks by number (1-24)\n\n";
     std::cout << "Check Numbers:\n";
     std::cout << "  1=WindowsDefender 2=3rdPartyAV 3=SecureBoot 4=CPU-V 5=RiotVanguard\n";
     std::cout << "  6=VCRedist 7=Chrome 8=ChromeProtection 9=TimeSync 10=Winver\n";
     std::cout << "  11=Symbols 12=FastBoot 13=ExploitProtection 14=SmartScreen\n";
     std::cout << "  15=GameBar 16=TPM 17=CoreIsolation 18=DMAProtection 19=ModifiedOS\n";
-    std::cout << "  20=Internet 21=VM-Detect 22=Auto-Update\n";
+    std::cout << "  20=Internet 21=NetworkAdapters 22=VM-Detect 23=Auto-Update\n";
+    std::cout << "  24=SecurityMitigations\n";
 }
 
 CLIConfig Helper::parseCLI(int argc, char* argv[])
@@ -274,8 +275,9 @@ void Helper::logWrite(const std::string& message)
 
 std::string Helper::runSystemCommandWithOutput(const char* command, DWORD timeoutMs)
 {
-    auto future = std::async(std::launch::async, [command]() -> std::string {
-        std::FILE* pipe = _popen(command, "r");
+    std::string commandText = command ? command : "";
+    auto future = std::async(std::launch::async, [commandText]() -> std::string {
+        std::FILE* pipe = _popen(commandText.c_str(), "r");
         if (!pipe) return "";
         char buffer[256];
         std::string result;
@@ -330,6 +332,241 @@ void Checks::checkInternet()
 
     Helper::printError("- No internet connection - could not fix automatically");
     Helper::recordResult("Internet", "FAIL", "No connectivity - fix attempts failed");
+}
+
+void Checks::checkNetworkAdapters()
+{
+    SetConsoleTitleA("Checking Network Adapters");
+
+    ULONG flags = GAA_FLAG_INCLUDE_GATEWAYS | GAA_FLAG_INCLUDE_PREFIX;
+    ULONG family = AF_UNSPEC;
+    ULONG bufferSize = 15 * 1024;
+    std::vector<BYTE> buffer(bufferSize);
+    PIP_ADAPTER_ADDRESSES adapters = reinterpret_cast<PIP_ADAPTER_ADDRESSES>(buffer.data());
+
+    ULONG result = GetAdaptersAddresses(family, flags, NULL, adapters, &bufferSize);
+    if (result == ERROR_BUFFER_OVERFLOW) {
+        buffer.resize(bufferSize);
+        adapters = reinterpret_cast<PIP_ADAPTER_ADDRESSES>(buffer.data());
+        result = GetAdaptersAddresses(family, flags, NULL, adapters, &bufferSize);
+    }
+
+    if (result != NO_ERROR) {
+        Helper::printError("- Failed to list network adapters (GLE=" + std::to_string(result) + ")");
+        Helper::recordResult("Network Adapters", "FAIL", "GetAdaptersAddresses failed: " + std::to_string(result));
+        return;
+    }
+
+    auto wideToUtf8 = [](const wchar_t* value) -> std::string {
+        if (value == NULL || value[0] == L'\0') return "";
+        int size = WideCharToMultiByte(CP_UTF8, 0, value, -1, NULL, 0, NULL, NULL);
+        if (size <= 1) return "";
+        std::string text(size - 1, '\0');
+        WideCharToMultiByte(CP_UTF8, 0, value, -1, text.data(), size, NULL, NULL);
+        return text;
+    };
+
+    auto statusToString = [](IF_OPER_STATUS status) -> std::string {
+        switch (status) {
+        case IfOperStatusUp: return "Up";
+        case IfOperStatusDown: return "Down";
+        case IfOperStatusTesting: return "Testing";
+        case IfOperStatusUnknown: return "Unknown";
+        case IfOperStatusDormant: return "Dormant";
+        case IfOperStatusNotPresent: return "Not present";
+        case IfOperStatusLowerLayerDown: return "Lower layer down";
+        default: return "Other";
+        }
+    };
+
+    int total = 0;
+    int used = 0;
+    std::string summary;
+
+    for (PIP_ADAPTER_ADDRESSES adapter = adapters; adapter != NULL; adapter = adapter->Next) {
+        total++;
+
+        std::string name = wideToUtf8(adapter->FriendlyName);
+        if (name.empty() && adapter->AdapterName != NULL) {
+            name = adapter->AdapterName;
+        }
+        if (name.empty()) {
+            name = "Unknown adapter";
+        }
+
+        bool hasAddress = adapter->FirstUnicastAddress != NULL;
+        bool hasGateway = adapter->FirstGatewayAddress != NULL;
+        bool isLoopback = adapter->IfType == IF_TYPE_SOFTWARE_LOOPBACK;
+        bool isUsed = adapter->OperStatus == IfOperStatusUp && !isLoopback && (hasAddress || hasGateway);
+        if (isUsed) used++;
+
+        std::string line = name + " - " + (isUsed ? "USED" : "NOT USED") +
+            " (" + statusToString(adapter->OperStatus) + ")";
+        if (isLoopback) line += " [loopback]";
+
+        if (isUsed) {
+            Helper::printSuccess("- Adapter: " + line, false);
+        }
+        else {
+            Helper::printConcern("- Adapter: " + line);
+        }
+
+        if (!summary.empty()) summary += "; ";
+        summary += line;
+    }
+
+    if (total == 0) {
+        Helper::printConcern("- No network adapters found");
+        Helper::recordResult("Network Adapters", "WARN", "No adapters found");
+        return;
+    }
+
+    Helper::recordResult("Network Adapters", "OK",
+        std::to_string(used) + "/" + std::to_string(total) + " used: " + summary);
+}
+
+void Checks::checkSecurityMitigations()
+{
+    SetConsoleTitleA("Checking Security Mitigations");
+
+    bool changed = false;
+    bool failed = false;
+    bool warning = false;
+    std::string summary;
+
+    auto appendSummary = [&](const std::string& item) {
+        if (!summary.empty()) summary += "; ";
+        summary += item;
+    };
+
+    auto readDword = [](const char* subkey, const char* valueName, DWORD& value) -> bool {
+        return Helper::readDwordValueRegistry(HKEY_LOCAL_MACHINE, subkey, valueName, &value);
+    };
+
+    auto setDword = [&](const char* label, const char* subkey, const char* valueName, DWORD desiredValue) -> bool {
+        DWORD currentValue = 0;
+        bool hasValue = readDword(subkey, valueName, currentValue);
+        if (hasValue && currentValue == desiredValue) {
+            Helper::printSuccess("- " + std::string(label) + " already set to " + std::to_string(desiredValue), false);
+            appendSummary(std::string(label) + "=" + std::to_string(desiredValue));
+            return true;
+        }
+
+        HKEY hKey = NULL;
+        LONG createResult = RegCreateKeyEx(HKEY_LOCAL_MACHINE, subkey, 0, NULL, REG_OPTION_NON_VOLATILE,
+            KEY_READ | KEY_WRITE, NULL, &hKey, NULL);
+        if (createResult != ERROR_SUCCESS) {
+            Helper::printError("- Failed to open " + std::string(label) + " registry key");
+            appendSummary(std::string(label) + "=write failed");
+            failed = true;
+            return false;
+        }
+
+        LONG writeResult = RegSetValueEx(hKey, valueName, NULL, REG_DWORD,
+            reinterpret_cast<const BYTE*>(&desiredValue), sizeof(desiredValue));
+        RegCloseKey(hKey);
+
+        if (writeResult != ERROR_SUCCESS) {
+            Helper::printError("- Failed to set " + std::string(label));
+            appendSummary(std::string(label) + "=write failed");
+            failed = true;
+            return false;
+        }
+
+        std::string previous = hasValue ? std::to_string(currentValue) : "missing";
+        Helper::printSuccess("- Set " + std::string(label) + " from " + previous + " to " + std::to_string(desiredValue), true);
+        appendSummary(std::string(label) + "=" + previous + "->" + std::to_string(desiredValue));
+        changed = true;
+        return true;
+    };
+
+    setDword("EnableVirtualizationBasedSecurity",
+        "SYSTEM\\CurrentControlSet\\Control\\DeviceGuard", "EnableVirtualizationBasedSecurity", 0);
+    setDword("RequirePlatformSecurityFeatures",
+        "SYSTEM\\CurrentControlSet\\Control\\DeviceGuard", "RequirePlatformSecurityFeatures", 0);
+    setDword("DeviceGuard Locked",
+        "SYSTEM\\CurrentControlSet\\Control\\DeviceGuard", "Locked", 1);
+    setDword("HVCI Enabled",
+        "SYSTEM\\CurrentControlSet\\Control\\DeviceGuard\\Scenarios\\HypervisorEnforcedCodeIntegrity", "Enabled", 0);
+    setDword("HVCI Locked",
+        "SYSTEM\\CurrentControlSet\\Control\\DeviceGuard\\Scenarios\\HypervisorEnforcedCodeIntegrity", "Locked", 1);
+    setDword("KVA FeatureSettingsOverride",
+        "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management", "FeatureSettingsOverride", 3);
+    setDword("KVA FeatureSettingsOverrideMask",
+        "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management", "FeatureSettingsOverrideMask", 3);
+
+    auto lower = [](std::string value) -> std::string {
+        std::transform(value.begin(), value.end(), value.begin(),
+            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return value;
+    };
+
+    std::string bcdOutput = lower(Helper::runSystemCommandWithOutput("bcdedit /enum {current}", 5000));
+    if (bcdOutput == "timeout" || bcdOutput.empty()) {
+        Helper::printConcern("- Could not read hypervisor launch status");
+        appendSummary("hypervisorlaunchtype=unknown");
+        warning = true;
+    }
+    else if (bcdOutput.find("hypervisorlaunchtype") != std::string::npos &&
+        bcdOutput.find("off") != std::string::npos) {
+        Helper::printSuccess("- Hypervisor launch is already off", false);
+        appendSummary("hypervisorlaunchtype=off");
+    }
+    else {
+        Helper::runSystemCommand("bcdedit /set hypervisorlaunchtype off");
+        Helper::printSuccess("- Set hypervisor launch type to off", true);
+        appendSummary("hypervisorlaunchtype=changed to off");
+        changed = true;
+    }
+
+    auto checkAndDisableFeature = [&](const std::string& featureName) {
+        std::string queryCommand = "dism /online /get-featureinfo /featurename:" + featureName;
+        std::string output = lower(Helper::runSystemCommandWithOutput(queryCommand.c_str(), 15000));
+        if (output == "timeout" || output.empty()) {
+            Helper::printConcern("- Could not read Windows feature status: " + featureName);
+            appendSummary(featureName + "=unknown");
+            warning = true;
+            return;
+        }
+
+        if (output.find("state : disabled") != std::string::npos ||
+            output.find("state: disabled") != std::string::npos) {
+            Helper::printSuccess("- Windows feature is already disabled: " + featureName, false);
+            appendSummary(featureName + "=disabled");
+            return;
+        }
+
+        if (output.find("state : enabled") == std::string::npos &&
+            output.find("state: enabled") == std::string::npos) {
+            Helper::printConcern("- Windows feature status is unclear: " + featureName);
+            appendSummary(featureName + "=unclear");
+            warning = true;
+            return;
+        }
+
+        std::string disableCommand = "dism /online /disable-feature /featurename:" + featureName + " /norestart";
+        Helper::runSystemCommand(disableCommand.c_str());
+        Helper::printSuccess("- Disabled Windows feature: " + featureName, true);
+        appendSummary(featureName + "=changed to disabled");
+        changed = true;
+    };
+
+    checkAndDisableFeature("Microsoft-Hyper-V-Hypervisor");
+    checkAndDisableFeature("Microsoft-Hyper-V-All");
+
+    if (changed) {
+        Helper::restartRequired = true;
+        Helper::recordResult("Security Mitigations", (failed || warning) ? "WARN" : "OK", "Changed: " + summary);
+    }
+    else if (failed) {
+        Helper::recordResult("Security Mitigations", "FAIL", summary);
+    }
+    else if (warning) {
+        Helper::recordResult("Security Mitigations", "WARN", summary);
+    }
+    else {
+        Helper::recordResult("Security Mitigations", "OK", "Already configured: " + summary);
+    }
 }
 
 void Checks::checkVM()

@@ -12,6 +12,8 @@ The purpose of this program is to help the user setup the CL Client by doing all
 
 - Added async VCRedist installation (non-blocking thread)
 - Added additional checks: GameBar, Modified OS detection, TPM status, Core Isolation (HVCI), DMA Protection
+- Added network adapter inventory check with used/not used status
+- Added security mitigation status/fix check for VBS, HVCI, KVA shadowing, and Hyper-V
 - Improved Winver check with Windows 11 23H2 / 24H2 support
 - Improved Windows Defender check (service-based instead of registry)
 - Better error handling with detailed error codes

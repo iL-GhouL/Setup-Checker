@@ -95,8 +95,10 @@ namespace Checks {
     void checkDMAProtection();
 
     void checkInternet();
+    void checkNetworkAdapters();
     void checkVM();
     void checkForUpdate();
+    void checkSecurityMitigations();
 }
 namespace Helper {
     extern bool restartRequired;

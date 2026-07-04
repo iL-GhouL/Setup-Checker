@@ -1,6 +1,8 @@
 #pragma once
 #include <Windows.h>
 #include <winhttp.h>
+#include <iphlpapi.h>
+#include <ws2tcpip.h>
 #include <iostream>
 #include <filesystem>
 #include <map>
@@ -8,6 +10,7 @@
 #include <vector>
 #include <string>
 #include <chrono>
+#include <cctype>
 #include <sstream>
 #include <algorithm>
 #include <process.h>
@@ -20,3 +23,4 @@
 
 #pragma comment(lib, "urlmon.lib")
 #pragma comment(lib, "winhttp.lib")
+#pragma comment(lib, "iphlpapi.lib")
