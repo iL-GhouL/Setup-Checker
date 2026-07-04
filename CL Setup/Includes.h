@@ -6,6 +6,7 @@
 #include <WinSock2.h>
 #include <Windows.h>
 #include <winhttp.h>
+#include <urlmon.h>
 #include <iphlpapi.h>
 #include <ws2tcpip.h>
 #include <iostream>

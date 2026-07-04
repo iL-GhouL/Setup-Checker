@@ -14,7 +14,7 @@ namespace Helper {
     std::mutex g_resultsMutex;
     std::string g_repoUrl = "iL-GhouL/Setup-Checker";
     std::string g_appName = "CL-Setup";
-    std::string g_appVersion = "1.2.3";
+    std::string g_appVersion = "1.2.4";
 }
 
 void Helper::recordResult(const std::string& check, const std::string& status, const std::string& message)
