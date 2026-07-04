@@ -21,7 +21,15 @@ jobs:
         uses: microsoft/setup-msbuild@v2
 
       - name: Build x64 release
-        run: msbuild "CL Setup.sln" /m /p:Configuration=Release /p:Platform=x64
+        shell: pwsh
+        run: |
+          msbuild "CL Setup.sln" /m /p:Configuration=Release /p:Platform=x64 /flp:logfile=msbuild.log;verbosity=normal
+          if ($LASTEXITCODE -ne 0) {
+            $tail = (Get-Content msbuild.log -Tail 80) -join "`n"
+            $message = $tail.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Output "::error title=MSBuild failed::$message"
+            exit $LASTEXITCODE
+          }
 
       - name: Package executable
         shell: pwsh
