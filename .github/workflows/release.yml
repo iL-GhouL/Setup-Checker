@@ -23,12 +23,18 @@ jobs:
       - name: Build x64 release
         shell: pwsh
         run: |
-          msbuild "CL Setup.sln" /m /p:Configuration=Release /p:Platform=x64 /flp:logfile=msbuild.log;verbosity=normal
-          if ($LASTEXITCODE -ne 0) {
-            $tail = (Get-Content msbuild.log -Tail 80) -join "`n"
+          $ErrorActionPreference = 'Continue'
+          if (Get-Variable PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
+            $PSNativeCommandUseErrorActionPreference = $false
+          }
+
+          & msbuild "CL Setup.sln" /m /p:Configuration=Release /p:Platform=x64 *>&1 | Tee-Object -FilePath msbuild.log
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) {
+            $tail = (Get-Content msbuild.log -Tail 80 -ErrorAction SilentlyContinue) -join "`n"
             $message = $tail.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
             Write-Output "::error title=MSBuild failed::$message"
-            exit $LASTEXITCODE
+            exit $exitCode
           }
 
       - name: Package executable
