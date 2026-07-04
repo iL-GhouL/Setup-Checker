@@ -12,9 +12,9 @@ namespace Helper {
     CLIConfig cliConfig;
     std::vector<CheckResult> g_results;
     std::mutex g_resultsMutex;
-    std::string g_repoUrl = "Julien-winter/CL-Setup";
+    std::string g_repoUrl = "iL-GhouL/Setup-Checker";
     std::string g_appName = "CL-Setup";
-    std::string g_appVersion = "1.1.1";
+    std::string g_appVersion = "1.2.0";
 }
 
 void Helper::recordResult(const std::string& check, const std::string& status, const std::string& message)
