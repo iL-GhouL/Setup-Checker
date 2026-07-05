@@ -12,9 +12,12 @@ namespace Helper {
     CLIConfig cliConfig;
     std::vector<CheckResult> g_results;
     std::mutex g_resultsMutex;
+    std::vector<std::string> g_pendingChanges;
+    std::mutex g_pendingChangesMutex;
+    bool applyChanges = false;
     std::string g_repoUrl = "iL-GhouL/Setup-Checker";
     std::string g_appName = "CL-Setup";
-    std::string g_appVersion = "1.2.4";
+    std::string g_appVersion = "1.3.0";
 }
 
 void Helper::recordResult(const std::string& check, const std::string& status, const std::string& message)
@@ -22,6 +25,77 @@ void Helper::recordResult(const std::string& check, const std::string& status, c
     std::lock_guard<std::mutex> lock(g_resultsMutex);
     g_results.push_back({check, status, message});
     logWrite("  [" + status + "] " + check + " - " + message);
+}
+
+void Helper::clearResults()
+{
+    std::lock_guard<std::mutex> lock(g_resultsMutex);
+    g_results.clear();
+}
+
+bool Helper::requestChange(const std::string& change)
+{
+    if (applyChanges) return true;
+
+    {
+        std::lock_guard<std::mutex> lock(g_pendingChangesMutex);
+        if (std::find(g_pendingChanges.begin(), g_pendingChanges.end(), change) == g_pendingChanges.end()) {
+            g_pendingChanges.push_back(change);
+        }
+    }
+
+    printConcern("- Change needed: " + change);
+    return false;
+}
+
+void Helper::clearPendingChanges()
+{
+    std::lock_guard<std::mutex> lock(g_pendingChangesMutex);
+    g_pendingChanges.clear();
+}
+
+bool Helper::hasPendingChanges()
+{
+    std::lock_guard<std::mutex> lock(g_pendingChangesMutex);
+    return !g_pendingChanges.empty();
+}
+
+void Helper::printPendingChanges()
+{
+    std::lock_guard<std::mutex> lock(g_pendingChangesMutex);
+    if (g_pendingChanges.empty()) return;
+
+    Color::setForegroundColor(Color::Cyan);
+    std::cout << "\nPending changes:\n";
+    Color::setForegroundColor(Color::LightGray);
+    for (const auto& change : g_pendingChanges) {
+        std::cout << " - " << change << "\n";
+    }
+}
+
+bool Helper::promptApplyChanges()
+{
+    if (!hasPendingChanges()) return false;
+    printPendingChanges();
+
+    if (cliConfig.headless) {
+        printConcern("- Headless mode: pending changes were not applied");
+        return false;
+    }
+
+    int choice = MessageBoxA(NULL,
+        "The checker found changes that may be needed.\n\nApply these changes now?",
+        "Apply setup changes?",
+        MB_YESNO | MB_ICONQUESTION | MB_TOPMOST);
+    if (choice == IDYES) return true;
+    if (choice == IDNO) return false;
+
+    std::string answer;
+    std::cout << "\nApply pending changes? Type yes or no: ";
+    std::getline(std::cin, answer);
+    std::transform(answer.begin(), answer.end(), answer.begin(),
+        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return answer == "yes" || answer == "y";
 }
 
 std::string Helper::escapeJSON(const std::string& s)
@@ -150,6 +224,7 @@ void Helper::showHelp()
     std::cout << "  --help              Show this help message\n";
     std::cout << "  --headless          Run without user interaction\n";
     std::cout << "  --quiet             Only show errors and warnings\n";
+    std::cout << "  --apply             Apply needed changes without prompting\n";
     std::cout << "  --export FILE       Export results as JSON to FILE\n";
     std::cout << "  --skip N[,M,...]    Skip specific checks by number (1-24)\n";
     std::cout << "  --only N[,M,...]    Run only specific checks by number (1-24)\n\n";
@@ -176,6 +251,9 @@ CLIConfig Helper::parseCLI(int argc, char* argv[])
         }
         else if (arg == "--quiet") {
             config.quiet = true;
+        }
+        else if (arg == "--apply") {
+            config.autoApply = true;
         }
         else if (arg == "--skip" && i + 1 < argc) {
             std::string val(argv[++i]);
@@ -305,6 +383,11 @@ void Checks::checkInternet()
 
     if (testPing()) {
         Helper::recordResult("Internet", "OK", "Connected");
+        return;
+    }
+
+    if (!Helper::requestChange("Repair internet connection with DNS flush, Winsock reset, and IP renew")) {
+        Helper::recordResult("Internet", "WARN", "No connectivity - repair pending approval");
         return;
     }
 
@@ -452,6 +535,13 @@ void Checks::checkSecurityMitigations()
             return true;
         }
 
+        if (!Helper::requestChange("Set " + std::string(label) + " to " + std::to_string(desiredValue))) {
+            appendSummary(std::string(label) + "=" + (hasValue ? std::to_string(currentValue) : "missing") +
+                "->" + std::to_string(desiredValue) + " pending");
+            warning = true;
+            return false;
+        }
+
         HKEY hKey = NULL;
         LONG createResult = RegCreateKeyEx(HKEY_LOCAL_MACHINE, subkey, 0, NULL, REG_OPTION_NON_VOLATILE,
             KEY_READ | KEY_WRITE, NULL, &hKey, NULL);
@@ -513,6 +603,11 @@ void Checks::checkSecurityMitigations()
         appendSummary("hypervisorlaunchtype=off");
     }
     else {
+        if (!Helper::requestChange("Set hypervisorlaunchtype to off")) {
+            appendSummary("hypervisorlaunchtype=change pending");
+            warning = true;
+            return;
+        }
         Helper::runSystemCommand("bcdedit /set hypervisorlaunchtype off");
         Helper::printSuccess("- Set hypervisor launch type to off", true);
         appendSummary("hypervisorlaunchtype=changed to off");
@@ -540,6 +635,12 @@ void Checks::checkSecurityMitigations()
             output.find("state: enabled") == std::string::npos) {
             Helper::printConcern("- Windows feature status is unclear: " + featureName);
             appendSummary(featureName + "=unclear");
+            warning = true;
+            return;
+        }
+
+        if (!Helper::requestChange("Disable Windows feature " + featureName)) {
+            appendSummary(featureName + "=disable pending");
             warning = true;
             return;
         }
@@ -735,6 +836,13 @@ void Checks::checkWindowsDefender()
         return;
     }
 
+    if (!Helper::requestChange("Disable Windows Defender service and policy settings")) {
+        CloseServiceHandle(service);
+        CloseServiceHandle(scm);
+        Helper::recordResult("Windows Defender", "WARN", "Enabled - disable pending approval");
+        return;
+    }
+
     // Try to stop + disable
     CloseServiceHandle(service);
     service = OpenService(scm, "WinDefend", SERVICE_CHANGE_CONFIG | SERVICE_STOP | SERVICE_QUERY_STATUS);
@@ -788,6 +896,9 @@ void Checks::check3rdPartyAntiVirus()
     auto runWMIC = [](const std::string& cmd) -> std::string {
         std::FILE* pipe = _popen(cmd.c_str(), "r");
         if (!pipe) {
+            if (!Helper::requestChange("Enable WMIC optional feature for antivirus detection")) {
+                return std::string("ERROR");
+            }
             Helper::runSystemCommand("dism /online /enable-feature /featurename:WMIC /quiet /norestart 2>nul");
             Sleep(500);
             pipe = _popen(cmd.c_str(), "r");
@@ -842,6 +953,11 @@ void Checks::check3rdPartyAntiVirus()
         if (tamperActive) {
             Helper::printConcern("- Cannot auto-uninstall while tamper protection is active");
             Helper::recordResult("3rd Party AV", "WARN", "Tamper protection active: " + antivirusList);
+            return;
+        }
+
+        if (!Helper::requestChange("Attempt to uninstall detected third-party antivirus: " + antivirusList)) {
+            Helper::recordResult("3rd Party AV", "WARN", "Found, uninstall pending approval: " + antivirusList);
             return;
         }
 
@@ -900,6 +1016,9 @@ void Checks::checkCPUV()
     auto runWMIC = [](const std::string& cmd) -> std::string {
         std::FILE* pipe = _popen(cmd.c_str(), "r");
         if (!pipe) {
+            if (!Helper::requestChange("Enable WMIC optional feature for CPU virtualization detection")) {
+                return std::string("ERROR");
+            }
             Helper::runSystemCommand("dism /online /enable-feature /featurename:WMIC /quiet /norestart 2>nul");
             Sleep(500);
             pipe = _popen(cmd.c_str(), "r");
@@ -957,6 +1076,12 @@ void Checks::uninstallRiotVanguard()
 
             if (std::filesystem::exists("C:\\Program Files\\Riot Vanguard\\installer.exe") ||
                 std::filesystem::exists("C:\\Program Files (x86)\\Riot Vanguard\\installer.exe")) {
+                if (!Helper::requestChange("Uninstall Riot Vanguard")) {
+                    Helper::printError("- Riot Vanguard is installed");
+                    Helper::recordResult("Riot Vanguard", "WARN", "Installed - uninstall pending approval");
+                    return;
+                }
+
                 if (!Helper::cliConfig.headless) {
                     MessageBoxA(NULL, "When prompted to uninstall Vanguard, press YES", "Uninstall Vanguard", MB_ICONINFORMATION | MB_TOPMOST);
                 }
@@ -993,6 +1118,13 @@ void Checks::installVCRedist()
     if (alreadyInstalled) {
         Helper::printSuccess("- VCRedist is already installed", false);
         Helper::recordResult("VC Redist", "OK", "Already installed");
+        Helper::vcComplete = true;
+        return;
+    }
+
+    if (!Helper::requestChange("Download and install Microsoft Visual C++ Redistributable")) {
+        Helper::printConcern("- VCRedist is missing");
+        Helper::recordResult("VC Redist", "WARN", "Missing - install pending approval");
         Helper::vcComplete = true;
         return;
     }
@@ -1082,6 +1214,10 @@ void Checks::isChromeInstalled()
         }
     }
     Helper::printError("- Google Chrome is not installed");
+    if (!Helper::requestChange("Open Google Chrome download page")) {
+        Helper::recordResult("Google Chrome", "WARN", "Not installed - download pending approval");
+        return;
+    }
     Helper::recordResult("Google Chrome", "FAIL", "Not installed");
     Sleep(1000);
     Helper::runSystemCommand("start https://www.google.com/chrome/");
@@ -1096,6 +1232,12 @@ void Checks::syncWindowsTime()
         Helper::recordResult("Time Sync", "FAIL", "SCM open failed");
         return;
     }
+    if (!Helper::requestChange("Sync and repair Windows Time service")) {
+        CloseServiceHandle(scmHandle);
+        Helper::recordResult("Time Sync", "WARN", "Sync pending approval");
+        return;
+    }
+
     Helper::runSystemCommand("w32tm /register");
 
     if (Helper::getServiceStatus("W32Time") == STATUS_SERVICE_STOPPED) {
@@ -1171,6 +1313,11 @@ void Checks::disableChromeProtection()
         }
     }
 
+    if (!Helper::requestChange("Disable Chrome Safe Browsing protection policy")) {
+        Helper::recordResult("Chrome Protection", "WARN", "Enabled - policy change pending approval");
+        return;
+    }
+
     HKEY hKey; DWORD disp; DWORD value = 0x00000001;
     LONG createKey = RegCreateKeyEx(HKEY_LOCAL_MACHINE, "SOFTWARE\\Policies\\Google\\Chrome",
         0, NULL, REG_OPTION_NON_VOLATILE, KEY_READ | KEY_WRITE, NULL, &hKey, &disp);
@@ -1244,6 +1391,11 @@ void Checks::deleteSymbols()
     SetConsoleTitleA("Deleting C:\\Symbols");
     std::string path = "C:\\Symbols";
     if (std::filesystem::exists(path)) {
+        if (!Helper::requestChange("Delete " + path)) {
+            Helper::recordResult("Symbols", "WARN", "Present - delete pending approval");
+            return;
+        }
+
         std::error_code ec;
         if (!std::filesystem::remove_all(path, ec)) {
             Helper::printError("- Unable to delete " + path + " (Error 24, " + ec.message() + ")");
@@ -1268,6 +1420,11 @@ void Checks::checkFastBoot()
             return;
         }
     }
+    if (!Helper::requestChange("Disable Fast Boot")) {
+        Helper::recordResult("Fast Boot", "WARN", "Enabled - disable pending approval");
+        return;
+    }
+
     HKEY hKey; DWORD disp; DWORD value = 0;
     LONG ck = RegCreateKeyEx(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Power",
         0, NULL, REG_OPTION_NON_VOLATILE, KEY_READ | KEY_WRITE, NULL, &hKey, &disp);
@@ -1296,6 +1453,11 @@ void Checks::checkExploitProtection()
             return;
         }
     }
+    if (!Helper::requestChange("Disable Exploit Protection override")) {
+        Helper::recordResult("Exploit Protection", "WARN", "Enabled - disable pending approval");
+        return;
+    }
+
     HKEY hKey; DWORD disp; DWORD value = 1;
     LONG ck = RegCreateKeyEx(HKEY_LOCAL_MACHINE,
         "SOFTWARE\\Policies\\Microsoft\\Windows Defender Security Center\\App and Browser protection",
@@ -1324,6 +1486,11 @@ void Checks::checkSmartScreen()
             return;
         }
     }
+    if (!Helper::requestChange("Disable SmartScreen")) {
+        Helper::recordResult("SmartScreen", "WARN", "Enabled - disable pending approval");
+        return;
+    }
+
     HKEY hKey; DWORD disp; DWORD value = 0;
     LONG ck = RegCreateKeyEx(HKEY_LOCAL_MACHINE, "SOFTWARE\\Policies\\Microsoft\\Windows\\System",
         0, NULL, REG_OPTION_NON_VOLATILE, KEY_READ | KEY_WRITE, NULL, &hKey, &disp);
@@ -1351,6 +1518,11 @@ void Checks::checkGameBar()
             return;
         }
     }
+    if (!Helper::requestChange("Enable Xbox Game Bar capture setting")) {
+        Helper::recordResult("Game Bar", "WARN", "Disabled - enable pending approval");
+        return;
+    }
+
     HKEY hKey; DWORD disp; DWORD value = 1;
     LONG ck = RegCreateKeyEx(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\GameDVR",
         0, NULL, REG_OPTION_NON_VOLATILE, KEY_READ | KEY_WRITE, NULL, &hKey, &disp);
@@ -1471,6 +1643,11 @@ void Checks::checkCoreIsolation()
     HKEY hKey;
 
     if (hvci == 1) {
+        if (!Helper::requestChange("Disable Core Isolation HVCI")) {
+            Helper::recordResult("Core Isolation", "WARN", "HVCI enabled - disable pending approval");
+            return;
+        }
+
         if (RegCreateKeyEx(HKEY_LOCAL_MACHINE,
             "SYSTEM\\CurrentControlSet\\Control\\DeviceGuard\\Scenarios\\HypervisorEnforcedCodeIntegrity",
             0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
@@ -1490,6 +1667,11 @@ void Checks::checkCoreIsolation()
     }
 
     if (vbs == 1) {
+        if (!Helper::requestChange("Disable Virtualization Based Security")) {
+            Helper::recordResult("Core Isolation", "WARN", "VBS enabled - disable pending approval");
+            return;
+        }
+
         if (RegCreateKeyEx(HKEY_LOCAL_MACHINE,
             "SYSTEM\\CurrentControlSet\\Control\\DeviceGuard",
             0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS) {

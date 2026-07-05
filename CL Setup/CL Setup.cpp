@@ -149,6 +149,48 @@ int main(int argc, char* argv[])
     if (!Helper::isCheckSkipped(24)) Checks::checkSecurityMitigations();
     else { Helper::printConcern("- Skipped: Security Mitigations"); Helper::recordResult("Security Mitigations", "SKIPPED", ""); }
 
+    if (Helper::hasPendingChanges()) {
+        Color::setForegroundColor(Color::LightGray);
+        std::cout << "-----------------------------------------------------------------\n";
+        Color::setForegroundColor(Color::Cyan);
+        std::cout << "Initial checks completed. No changes have been applied yet.\n";
+        Color::setForegroundColor(Color::LightGray);
+
+        bool approved = Helper::cliConfig.autoApply || Helper::promptApplyChanges();
+        if (approved) {
+            Helper::applyChanges = true;
+            Helper::clearPendingChanges();
+            Helper::clearResults();
+            Helper::vcComplete = false;
+            Helper::vcCheckSleepTimes = 0;
+
+            Color::setForegroundColor(Color::Cyan);
+            std::cout << "\nApplying approved changes...\n";
+            Color::setForegroundColor(Color::LightGray);
+            std::cout << "-----------------------------------------------------------------\n";
+
+            if (!Helper::isCheckSkipped(1)) Checks::checkWindowsDefender();
+            if (!Helper::isCheckSkipped(2)) Checks::check3rdPartyAntiVirus();
+            if (!Helper::isCheckSkipped(4)) Checks::checkCPUV();
+            if (!Helper::isCheckSkipped(5)) Checks::uninstallRiotVanguard();
+            if (!Helper::isCheckSkipped(6)) Checks::installVCRedist();
+            if (!Helper::isCheckSkipped(7)) Checks::isChromeInstalled();
+            if (!Helper::isCheckSkipped(8)) Checks::disableChromeProtection();
+            if (!Helper::isCheckSkipped(9)) Checks::syncWindowsTime();
+            if (!Helper::isCheckSkipped(11)) Checks::deleteSymbols();
+            if (!Helper::isCheckSkipped(12)) Checks::checkFastBoot();
+            if (!Helper::isCheckSkipped(13)) Checks::checkExploitProtection();
+            if (!Helper::isCheckSkipped(14)) Checks::checkSmartScreen();
+            if (!Helper::isCheckSkipped(15)) Checks::checkGameBar();
+            if (!Helper::isCheckSkipped(17)) Checks::checkCoreIsolation();
+            if (!Helper::isCheckSkipped(20)) Checks::checkInternet();
+            if (!Helper::isCheckSkipped(24)) Checks::checkSecurityMitigations();
+        }
+        else {
+            Helper::printConcern("- User declined changes. Leaving system unchanged.");
+        }
+    }
+
     Color::setForegroundColor(Color::LightGray);
     std::cout << "-----------------------------------------------------------------\n";
     Color::setForegroundColor(Color::Cyan);

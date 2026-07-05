@@ -62,6 +62,7 @@ struct CLIConfig {
     std::vector<int> onlyChecks;
     std::string exportPath;
     bool showHelp = false;
+    bool autoApply = false;
 };
 
 struct CheckResult {
@@ -114,6 +115,9 @@ namespace Helper {
 
     extern std::vector<CheckResult> g_results;
     extern std::mutex g_resultsMutex;
+    extern std::vector<std::string> g_pendingChanges;
+    extern std::mutex g_pendingChangesMutex;
+    extern bool applyChanges;
     extern std::string g_repoUrl;
     extern std::string g_appName;
     extern std::string g_appVersion;
@@ -134,6 +138,12 @@ namespace Helper {
     CLIConfig parseCLI(int argc, char* argv[]);
     void showHelp();
     bool isCheckSkipped(int checkId);
+    bool requestChange(const std::string& change);
+    void clearPendingChanges();
+    bool hasPendingChanges();
+    void printPendingChanges();
+    bool promptApplyChanges();
+    void clearResults();
 
     void recordResult(const std::string& check, const std::string& status, const std::string& message);
     void exportResultsJSON();

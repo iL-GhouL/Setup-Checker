@@ -4,6 +4,11 @@ Setup Checker is a Windows console utility that runs a pre-flight system check f
 
 The tool prints results to the console, records structured check results internally, can export results as JSON, and marks when a restart is required for changes to take effect.
 
+By default, Setup Checker runs in two stages:
+
+1. It checks the system and displays the current results without applying changes.
+2. If changes are needed, it asks for permission with a yes/no prompt before applying them.
+
 ## What It Checks
 
 - Windows Defender service and tamper-protection status
@@ -64,6 +69,7 @@ Options:
 --help              Show help
 --headless          Run without user interaction
 --quiet             Only show errors and warnings
+--apply             Apply needed changes without prompting
 --export FILE       Export results as JSON
 --skip N[,M,...]    Skip specific checks by number
 --only N[,M,...]    Run only specific checks by number
