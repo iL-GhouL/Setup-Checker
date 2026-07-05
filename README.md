@@ -32,7 +32,7 @@ By default, Setup Checker runs in two stages:
 - Internet connectivity and basic repair attempts
 - Network adapter inventory with `USED` / `NOT USED` status
 - Virtual machine indicators
-- GitHub release update status
+- GitHub release update status, checked weekly and cached locally
 - Security mitigation status for VBS, HVCI, KVA shadowing, and Hyper-V
 
 ## Changes It May Apply

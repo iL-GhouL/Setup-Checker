@@ -17,7 +17,7 @@ namespace Helper {
     bool applyChanges = false;
     std::string g_repoUrl = "iL-GhouL/Setup-Checker";
     std::string g_appName = "CL-Setup";
-    std::string g_appVersion = "1.3.0";
+    std::string g_appVersion = "1.3.1";
 }
 
 void Helper::recordResult(const std::string& check, const std::string& status, const std::string& message)
@@ -709,37 +709,113 @@ void Checks::checkForUpdate()
 {
     SetConsoleTitleA("Checking for Updates");
 
-    std::string json = Helper::fetchURL(L"https://api.github.com/repos/" +
-        std::wstring(Helper::g_repoUrl.begin(), Helper::g_repoUrl.end()) + L"/releases/latest");
-
-    if (json.empty()) {
-        Helper::printConcern("- Could not check for updates (no response from GitHub)");
-        Helper::recordResult("Auto-Update", "WARN", "Could not reach GitHub API");
-        return;
-    }
-
-    std::string tag;
-    auto tagPos = json.find("\"tag_name\":\"");
-    if (tagPos != std::string::npos) {
-        tagPos += 12;
-        auto endPos = json.find("\"", tagPos);
-        if (endPos != std::string::npos) {
-            tag = json.substr(tagPos, endPos - tagPos);
+    auto getUpdateCachePath = []() -> std::string {
+        char localAppData[MAX_PATH] = "";
+        std::string basePath;
+        if (GetEnvironmentVariableA("LOCALAPPDATA", localAppData, MAX_PATH) > 0) {
+            basePath = localAppData;
         }
-    }
+        else {
+            char tempPath[MAX_PATH] = "";
+            GetTempPathA(MAX_PATH, tempPath);
+            basePath = tempPath;
+        }
 
-    if (tag.empty()) {
-        Helper::printConcern("- Could not parse update info");
-        Helper::recordResult("Auto-Update", "WARN", "Could not parse release info");
-        return;
+        std::string dir = basePath + "\\CL-Setup";
+        CreateDirectoryA(dir.c_str(), NULL);
+        return dir + "\\update-check.txt";
+    };
+
+    auto isCacheFresh = [](const std::string& path) -> bool {
+        WIN32_FILE_ATTRIBUTE_DATA data;
+        if (!GetFileAttributesExA(path.c_str(), GetFileExInfoStandard, &data)) {
+            return false;
+        }
+
+        FILETIME nowFileTime;
+        GetSystemTimeAsFileTime(&nowFileTime);
+
+        ULARGE_INTEGER now;
+        now.LowPart = nowFileTime.dwLowDateTime;
+        now.HighPart = nowFileTime.dwHighDateTime;
+
+        ULARGE_INTEGER lastWrite;
+        lastWrite.LowPart = data.ftLastWriteTime.dwLowDateTime;
+        lastWrite.HighPart = data.ftLastWriteTime.dwHighDateTime;
+
+        const unsigned long long oneWeek = 7ULL * 24ULL * 60ULL * 60ULL * 10000000ULL;
+        return now.QuadPart >= lastWrite.QuadPart && (now.QuadPart - lastWrite.QuadPart) < oneWeek;
+    };
+
+    auto readCachedTag = [](const std::string& path) -> std::string {
+        std::ifstream file(path);
+        std::string tag;
+        if (file.is_open()) {
+            std::getline(file, tag);
+        }
+        return tag;
+    };
+
+    auto writeCachedTag = [](const std::string& path, const std::string& tag) {
+        std::ofstream file(path, std::ios::out | std::ios::trunc);
+        if (file.is_open()) {
+            file << tag << "\n";
+        }
+    };
+
+    std::string cachePath = getUpdateCachePath();
+    std::string tag = readCachedTag(cachePath);
+    bool usedCache = isCacheFresh(cachePath) && !tag.empty();
+
+    if (!usedCache) {
+        std::string json = Helper::fetchURL(L"https://api.github.com/repos/" +
+            std::wstring(Helper::g_repoUrl.begin(), Helper::g_repoUrl.end()) + L"/releases/latest");
+
+        if (json.empty()) {
+            if (!tag.empty()) {
+                Helper::printConcern("- Could not refresh update info, using cached latest version: " + tag);
+            }
+            else {
+                Helper::printConcern("- Could not check for updates (no response from GitHub)");
+                Helper::recordResult("Auto-Update", "WARN", "Could not reach GitHub API");
+                return;
+            }
+        }
+        else {
+            tag.clear();
+            auto tagPos = json.find("\"tag_name\":\"");
+            if (tagPos != std::string::npos) {
+                tagPos += 12;
+                auto endPos = json.find("\"", tagPos);
+                if (endPos != std::string::npos) {
+                    tag = json.substr(tagPos, endPos - tagPos);
+                }
+            }
+
+            if (tag.empty()) {
+                Helper::printConcern("- Could not parse update info");
+                Helper::recordResult("Auto-Update", "WARN", "Could not parse release info");
+                return;
+            }
+            writeCachedTag(cachePath, tag);
+        }
     }
 
     if (tag != "v" + Helper::g_appVersion && tag != Helper::g_appVersion) {
         Helper::printConcern("- New version available: " + tag + " (current: v" + Helper::g_appVersion + ")");
-        Helper::recordResult("Auto-Update", "WARN", "New version: " + tag);
+        if (!Helper::cliConfig.headless) {
+            MessageBoxA(NULL,
+                ("A newer Setup Checker version is available: " + tag +
+                    "\n\nCurrent version: v" + Helper::g_appVersion +
+                    "\n\nDownload it from the GitHub releases page.").c_str(),
+                "Update available",
+                MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
+        }
+        Helper::recordResult("Auto-Update", "WARN", "New version: " + tag + (usedCache ? " (cached weekly check)" : ""));
     }
     else {
-        Helper::recordResult("Auto-Update", "OK", "Up to date (v" + Helper::g_appVersion + ")");
+        Helper::recordResult("Auto-Update", "OK",
+            "Up to date (v" + Helper::g_appVersion + ")" + (usedCache ? " - checked this week" : ""));
     }
 }
 
